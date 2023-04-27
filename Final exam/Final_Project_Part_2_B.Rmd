@@ -1,0 +1,201 @@
+---
+title: "Final_Project_Part_2_B"
+author: "Peng Yuan"
+date: '2023-04-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Regression– iiB) Bayesian Linear models
+
+### 1. Load package and data
+#### 1.1 Load package
+```{r,1.1_solution}
+library(tidyverse)
+library(caret)
+library(coefplot)
+library(rstanarm)
+library(splines)
+```
+
+#### 1.2 Load data & LOGIT-transform data
+```{r,1.2_solution}
+df <- readr::read_csv("paint_project_train_data.csv", col_names = TRUE)
+
+dfii_ready <- df %>% 
+  mutate(y = boot::logit( (response - 0) / (100 - 0) ) ) %>% 
+  subset(select = c(R, G, B, 
+         Lightness, Saturation, Hue,response,
+         y))
+
+dfii <- dfii_ready %>%
+  subset(select = c(R, G, B, Hue)) %>% 
+  scale() %>% as.data.frame() %>%
+  bind_cols(dfii_ready %>% subset(select = c(Lightness, Saturation, y)))
+
+
+dfii %>% glimpse()
+```
+
+
+### 2. Model selection and fit full Bayesian linear models
+I would like to choose Model 5 and Model 10. Because in Part ii-A, Model 5 has the lowest AIC value and Model 10 has the lowest BIC value.
+#### 2.1 Original model
+```{r,2.1_solution}
+mod5 <- lm(y ~ (R + G + B + Hue) * (Saturation + Lightness), dfii)
+
+mod10 <- lm(y ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) + (Saturation * Lightness), dfii)
+```
+
+#### 2.2 Bayesian Model
+```{r,2.2_solution_mod5}
+stan_lm_mod5 <- stan_lm(formula(mod5), 
+                         data = dfii, 
+                         prior = R2(location = 0.75),
+                         chains = 1,
+                         iter = 300,
+                         seed = 123123,
+                         refresh = 0)
+```
+
+
+```{r,2.2_solution_mod10}
+stan_lm_mod10 <- stan_lm(formula(mod10), 
+                         data = dfii, 
+                         prior = R2(location = 0.75), 
+                         seed = 123123,
+                         chains = 1,
+                         iter = 300,
+                         refresh = 0)
+```
+
+#### 2.3 Compare Model by R-square, WAIC and Loo
+**R-square**
+```{r,2.3_R2_solution}
+tibble_model <- function(mod, mod_name) 
+  {tibble::tibble(rsquared = bayes_R2(mod)) %>% 
+                    mutate(model_name = mod_name)}
+
+R2_5_10 <- purrr::map2_dfr(list(stan_lm_mod5, stan_lm_mod10),
+                as.character(c("model_5","model_10")),
+                tibble_model)
+
+
+R2_5_10 %>% 
+  ggplot(mapping = aes(x = rsquared)) +
+  geom_freqpoly(bins = 55,
+                 mapping = aes(color = model_name),
+                 size = 1.1) +
+  coord_cartesian(xlim = c(0, 1)) +
+  ggthemes::scale_color_colorblind("Model") +
+  theme_bw()
+```
+
+```{r}
+rstanarm::bayes_R2(stan_lm_mod5) %>% quantile(c(0.05, 0.5, 0.95))
+```
+
+```{r}
+rstanarm::bayes_R2(stan_lm_mod10) %>% quantile(c(0.05, 0.5, 0.95))
+```
+
+The R-square 90% of both models is higher than 0.99, which means that the model inputs fit the model outputs very well. But this has the potential to produce an overfitting situation. It is difficult to choose the model from R- square comparison alone.
+
+**WAIC**
+```{r,2.3_WAIC_solution}
+stan_lm_mod5$WAIC <- waic(stan_lm_mod5)
+
+stan_lm_mod10$WAIC <- waic(stan_lm_mod10)
+```
+
+```{r,2.3_WAIC_compare}
+stan_lm_mod5$WAIC
+stan_lm_mod10$WAIC
+```
+
+The value of waic is equal to elpd_waic - p_waic, which represents the broad applicability of the model. Therefore we want to pick the model with lower value of waic. If we observe the value of WAIC directly, we will find that the value of mod9 is significantly larger than that of mod10.
+
+**LOO**
+```{r,2.3_LOO_build}
+loo_lm_5 <- loo(stan_lm_mod5)
+loo_lm_10 <- loo(stan_lm_mod10)
+```
+
+
+```{r,2.3_LOO_PSIS}
+plot(loo_lm_5, label_points = TRUE)
+plot(loo_lm_10, label_points = TRUE)
+```
+
+```{r,2.3_LOO_LPPD}
+plot(loo_lm_5, type = "lppd")
+plot(loo_lm_10, type = "lppd")
+```
+
+
+```{r,2.3_LOO_compare}
+loo_compare(loo_lm_5, loo_lm_10)
+```
+As a result, I think mod 10 is better than mod 5.
+
+#### 2.4 Visualize the regression coefficient posterior summary statistics for best model
+```{r}
+plot(stan_lm_mod10,  pars = names(stan_lm_mod10$coefficients)) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  theme_bw()
+```
+
+
+
+###  3. Posterior UNCERTAINTY on the likelihood noise, \sigma.
+```{r,3.1_sigma_distribution}
+sigma_uncertainty <-  as.data.frame(stan_lm_mod10) %>% tibble::as_tibble() %>% 
+  select(sigma) %>% 
+  pull() %>% 
+  quantile(c(0.05, 0.5, 0.95))
+
+sigma_uncertainty
+```
+In general, the fluctuation range of sigma is small and we can consider \sigma is accurate
+
+```{r}
+purrr::map2_dfr(list(stan_lm_mod5,stan_lm_mod10),
+                as.character(c(5,10)),
+                function(mod, mod_name){as.data.frame(mod) %>% tibble::as_tibble() %>% 
+                    select(sigma) %>% 
+                    mutate(model_name = mod_name)}) %>% 
+  ggplot(mapping = aes(x = sigma)) +
+  geom_freqpoly(bins = 55,
+                 mapping = aes(color = model_name),
+                 size = 1.1) +
+  ggthemes::scale_color_colorblind("Model") +
+  theme_bw()
+```
+
+**Compare with MLE**
+```{r}
+as.data.frame(stan_lm_mod10) %>% tibble::as_tibble() %>% 
+  select(sigma) %>% 
+  ggplot(mapping = aes(x = sigma)) +
+  geom_histogram(bins = 55) +
+  geom_vline(xintercept = stats::sigma(mod10),
+             color = "red", linetype = "dashed", size = 1.1) +
+  theme_bw()
+```
+
+**Do you feel the posterior is precise or are we quite uncertain about 𝜎?**
+The sigma uncertainty is between 0.057 and 0.051, so I think the posterior is precise.
+
+
+
+
+
+
+
+
+
+
+
