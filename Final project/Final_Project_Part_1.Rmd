@@ -1,0 +1,249 @@
+---
+title: "Final_Project_Part_1"
+author: "Peng Yuan"
+date: '2023-04-10'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Part i: Exploration
+
+### 1. Load package and data
+#### 1.1 Load package
+```{r,load_package}
+library(tidyverse)
+```
+
+#### 1.2 Load data
+```{r,load_data}
+df <- readr::read_csv("paint_project_train_data.csv", col_names = TRUE)
+
+df %>% glimpse()
+```
+
+### 2. Visualize the distributions of variables in the data set.
+
+#### 2.1Counts for categorical variables.
+```{r,2.1_solution}
+df <- df %>% mutate(outcome_event = ifelse(df$outcome == 1, 'event','non_event'))
+
+
+df %>%
+  count(outcome_event) %>%
+  ggplot(mapping = aes(x = outcome_event, y = n)) +
+  geom_bar(stat = "identity", fill = "steelblue",alpha = 0.8)
+```
+For categorical variables, the number of events is not balanced with the number of non_events. non_events are significantly more numerous.
+
+#### 2.2 Outcome interact with Saturation
+**Histograms or Density plots for continuous variables. Are the distributions Gaussian like?**
+```{r}
+data.frame(x = df$R) %>% 
+  ggplot(aes(x)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  labs(title = "Density Plot of Variable R", x = "Value of R", y = "Density")
+
+df_bin_R <-df %>% mutate(R_bin = cut(R,
+                            breaks = seq(0,300, by = 20),
+                            include.lowest = TRUE))
+
+df_bin_R %>% ggplot() +
+             geom_bar(mapping = aes(x = R_bin),fill = "steelblue")
+```
+
+```{r}
+data.frame(x = df$G) %>% 
+  ggplot(aes(x)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  labs(title = "Density Plot of Variable G", x = "Value of G", y = "Density")
+
+df_bin_G <-df %>% mutate(G_bin = cut(G,
+                            breaks = seq(0,300, by = 20),
+                            include.lowest = TRUE))
+
+df_bin_G %>% ggplot() +
+             geom_bar(mapping = aes(x = G_bin),fill = "steelblue")
+```
+
+```{r}
+data.frame(x = df$B) %>% 
+  ggplot(aes(x)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  labs(title = "Density Plot of Variable B", x = "Value of B", y = "Density")
+
+df_bin_B <-df %>% mutate(B_bin = cut(B,
+                            breaks = seq(0,300, by = 20),
+                            include.lowest = TRUE))
+
+df_bin_B %>% ggplot() +
+             geom_bar(mapping = aes(x = B_bin),fill = "steelblue")
+```
+
+```{r}
+data.frame(x = df$Hue) %>% 
+  ggplot(aes(x)) +
+  geom_density(fill = "steelblue", alpha = 0.5) +
+  labs(title = "Density Plot of Variable Hue", x = "Value of Hue", y = "Density")
+
+df_bin_Hue <-df %>% mutate(Hue_bin = cut(Hue,
+                            breaks = seq(0,40, by = 5),
+                            include.lowest = TRUE))
+
+df_bin_Hue %>% ggplot() +
+             geom_bar(mapping = aes(x = Hue_bin),fill = "steelblue")
+```
+
+
+R,G and B continuous variables's images look like the distributions Gaussian, but Hue's imagre looks like not.
+
+
+### Condition (group) the continuous variables based on the categorical variables.
+
+**Are there differences in continuous variable distributions and continuous variable summary statistics based on categorical variable values?**
+```{r}
+df %>% ggplot(aes(x = R, y = response,color = Lightness)) +
+                geom_line(size = 1.2) +
+                facet_wrap(~Saturation)
+
+df %>% ggplot(aes(x = G, y = response,color = Lightness)) +
+                geom_line(size = 1.2) +
+                facet_wrap(~Saturation)
+
+df %>% ggplot(aes(x = B, y = response,color = Lightness)) +
+                geom_line(size = 1.2) +
+                facet_wrap(~Saturation)
+
+
+df %>% ggplot(aes(x = Hue, y = response,color = Lightness)) +
+                geom_line(size = 1.2) +
+                facet_wrap(~Saturation)
+
+df %>% ggplot(aes(x = R + G + B + Hue, y = response,color = Lightness)) +
+                geom_line(size = 1.2) +
+                facet_wrap(~Saturation)
+```
+
+Overall the trend is the same. However, variable B has a slightly different trend in the case of BRIGHT classification and PURE classification.
+
+
+
+### Visualize the relationships between the continuous inputs, are they correlated?
+```{r}
+df_continuous <- df %>%  
+  subset(select = -c(outcome,Saturation,Lightness,outcome_event,response))
+
+df_continuous %>%
+  cor() %>%
+  corrplot::corrplot(type = "upper")
+```
+
+Most of the variables are correlated, but the correlation between Hue and response and G is not significant.
+
+
+### Visualize the relationships between the continuous outputs (response and the LOGIT-transformed response, y) with respect to the continuous INPUTS. 
+
+```{r}
+df_logit <- df %>% 
+  mutate(y = boot::logit( (response - 0) / (100 - 0) ) ) %>%
+  subset(select = c(R, G, B, 
+         Lightness, Saturation, Hue,response,
+         y))
+
+df_logit %>% glimpse()
+```
+
+**Can you identify any clear trends? Do the trends depend on the categorical INPUTS?**
+```{r}
+df_logit %>% 
+  ggplot(mapping = aes(x = R, y = y, color = Lightness))+
+  geom_smooth(method = 'loess', formula = y ~ x, size = 0.4)+
+  facet_wrap(~Saturation, scales = "free")+
+  theme_bw()
+```
+
+```{r}
+df_logit %>% 
+  ggplot(mapping = aes(x = G, y = y, color = Lightness))+
+  geom_smooth(method = 'loess', formula = y ~ x, size = 0.4)+
+  facet_wrap(~Saturation, scales = "free")+
+  theme_bw()
+```
+
+
+```{r}
+df_logit %>% 
+  ggplot(mapping = aes(x = B, y = y, color = Lightness))+
+  geom_smooth(method = 'loess', formula = y ~ x, size = 0.4)+
+  facet_wrap(~Saturation, scales = "free")+
+  theme_bw()
+```
+
+```{r}
+df_logit %>% 
+  ggplot(mapping = aes(x = Hue, y = y, color = Lightness))+
+  geom_smooth(method = 'loess', formula = y ~ x, size = 0.4)+
+  facet_wrap(~Saturation, scales = "free")+
+  theme_bw()
+```
+
+
+```{r}
+df %>% pivot_longer(c(R,G,B,Hue)) %>%
+  ggplot(mapping = aes(x = value, y = response)) + 
+  geom_point(aes(col = Lightness)) + 
+  geom_smooth(aes(fill = Lightness , col = Lightness), formula = y ~ x,method = lm) + 
+  facet_wrap(~factor(name,levels = c("R","G","B","Hue")), scales = "free") +
+  theme_bw()
+```
+
+Yes,I think we can observe a clear upward trend in R,G and B continuous variables, both among the classifications. But in Hue, 
+
+
+
+
+
+
+
+
+### How can you visualize the behavior of the binary outcome with respect to the continuous inputs? 
+```{r}
+df %>%
+  ggplot(mapping = aes(x = R, y = outcome))+
+  geom_point(mapping = aes(color = outcome),size = 0.1)+
+  facet_wrap(~Saturation, scales = "free")
+```
+
+```{r}
+df %>%
+  ggplot(mapping = aes(x = G, y = outcome))+
+  geom_point(mapping = aes(color = outcome),size = 0.1)+
+  facet_wrap(~Saturation, scales = "free")
+```
+
+```{r}
+df %>%
+  ggplot(mapping = aes(x = B, y = outcome))+
+  geom_point(mapping = aes(color = outcome),size = 0.1)+
+  facet_wrap(~Saturation, scales = "free")
+```
+
+```{r}
+df %>% 
+  ggplot(mapping = aes(x = Saturation)) + 
+  geom_bar(aes(fill = as.factor(outcome)),position = 'fill') + 
+  scale_fill_brewer(name = 'outcome') + 
+  theme_bw()
+```
+
+```{r}
+df %>% 
+  ggplot(mapping = aes(x = Lightness)) + 
+  geom_bar(aes(fill = as.factor(outcome)),position = 'fill') + 
+  scale_fill_brewer(name = 'outcome') + 
+  theme_bw()
+```
+
+
+

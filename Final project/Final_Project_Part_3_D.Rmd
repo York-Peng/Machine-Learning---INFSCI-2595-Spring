@@ -1,0 +1,846 @@
+---
+title: "Final_Project_Part_3_D"
+author: "Peng Yuan"
+date: '2023-04-20'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## iiiD) Train/tune with resampling
+### Load package and data
+#### 1.1 Load package
+```{r}
+library(tidyverse)
+library(caret)
+library(coefplot)
+library(rstanarm)
+library(splines)
+library(kernlab)
+```
+
+#### 1.2 Load data
+```{r}
+df_all <- readr::read_csv("paint_project_train_data.csv", col_names = TRUE)
+
+df <- df_all %>%
+  subset(select = c(R, G, B, Hue)) %>% 
+  scale() %>% as.data.frame() %>%
+  bind_cols(df_all %>% subset(select = c(Lightness, Saturation, outcome)))
+
+dfiii <- df %>% 
+  mutate(outcome = ifelse(outcome == 1, 'event', 'non_event'),
+         outcome = factor(outcome, levels = c('event', 'non_event')))
+
+dfiii %>% glimpse()
+```
+
+
+### 2. ROC
+#### 2.1 Train parameter
+```{r,2.1}
+my_ctrl <- trainControl(method = "repeatedcv",
+                        number = 5,
+                        repeats = 3,
+                        summaryFunction = twoClassSummary,
+                        classProbs = TRUE,
+                        savePredictions = TRUE)
+
+my_metric <- "ROC"
+```
+
+#### 2.2 Build models
+**All categorical and continuous inputs - linear additive features**
+```{r}
+set.seed(1234)
+roc_glm_add <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+roc_glm_add
+```
+**Add categorical inputs to all main effect and all pairwise interactions of continuous inputs**
+```{r}
+set.seed(1234)
+roc_glm_pair <- train(outcome ~ (.)^2 + Lightness + Saturation,
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+roc_glm_pair
+```
+
+**The 2 models selected from iiiA)**
+```{r}
+set.seed(1234)
+roc_glm_mod6 <- train(outcome ~ (R + G + B + Hue)^2 + (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+roc_glm_mod6
+```
+
+```{r}
+roc_glm_mod8 <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2)) + (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+roc_glm_mod8
+```
+
+#### 2.3 Regularized regression with Elastic net
+```{r}
+set.seed(1234)
+roc_glm_enet_pair_warmup <- train(outcome ~ (.)^2 + Lightness + Saturation,
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+roc_glm_enet_pair_warmup
+```
+
+**Tune**
+```{r}
+tune_grid_enet_roc <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                        seq(log(min(roc_glm_enet_pair_warmup$results$lambda)),
+                          log(max(roc_glm_enet_pair_warmup$results$lambda)),
+                          length.out = 25)))
+
+set.seed(1234)
+roc_glm_enet_pair_tuned <- train(outcome ~ (.)^2 + Lightness + Saturation,
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  tuneGrid = tune_grid_enet_roc,
+                  trControl = my_ctrl)
+
+plot(roc_glm_enet_pair_tuned, xTrans = log)
+```
+
+```{r}
+roc_glm_enet_pair_besttune <- roc_glm_enet_pair_tuned$bestTune
+roc_glm_enet_pair_besttune
+```
+
+```{r}
+roc_glm_enet_pair_roc <- roc_glm_enet_pair_tuned$results[
+  roc_glm_enet_pair_tuned$results$alpha ==
+    roc_glm_enet_pair_tuned$bestTune$alpha & 
+  roc_glm_enet_pair_tuned$results$lambda ==
+    roc_glm_enet_pair_tuned$bestTune$lambda,
+  "ROC"]
+roc_glm_enet_pair_roc
+```
+
+In the roc_glm_enet_pair tuned model, best alpha is 0.25 and lambda is 0.0004. In this condition, the ROC is 0.82.
+
+
+```{r}
+set.seed(1234)
+roc_glm_enet_mod9_warmup <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) * (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+plot(roc_glm_enet_mod9_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+tune_grid_enet_mod9_roc <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                        seq(log(min(roc_glm_enet_mod9_warmup$results$lambda)),
+                          log(max(roc_glm_enet_mod9_warmup$results$lambda)),
+                          length.out = 25)))
+
+set.seed(1234)
+roc_glm_enet_mod9_tune <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) * (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  tuneGrid = tune_grid_enet_mod9_roc,
+                  trControl = my_ctrl)
+
+plot(roc_glm_enet_mod9_tune, xTrans = log)
+```
+
+```{r}
+roc_glm_enet_mod9_besttune <- roc_glm_enet_mod9_tune$bestTune
+roc_glm_enet_mod9_besttune
+```
+
+```{r}
+roc_glm_enet_mod9_roc <- roc_glm_enet_mod9_tune$results[
+  roc_glm_enet_mod9_tune$results$alpha ==
+    roc_glm_enet_mod9_tune$bestTune$alpha & 
+  roc_glm_enet_mod9_tune$results$lambda ==
+    roc_glm_enet_mod9_tune$bestTune$lambda,
+  "ROC"]
+roc_glm_enet_mod9_roc
+```
+In the roc_glm_enet_pair tuned model, best alpha is 1 and lambda is 0.0035. In this condition, the ROC is 0.85.
+
+
+```{r}
+set.seed(1234)
+roc_glm_enet_mod8_warmup <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2)) + (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+plot(roc_glm_enet_mod8_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+tune_grid_enet_mod8_roc <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                        seq(log(min(roc_glm_enet_mod8_warmup$results$lambda)),
+                          log(max(roc_glm_enet_mod8_warmup$results$lambda)),
+                          length.out = 25)))
+
+set.seed(1234)
+roc_glm_enet_mod8_tune <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) * (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  tuneGrid = tune_grid_enet_mod8_roc,
+                  trControl = my_ctrl)
+
+plot(roc_glm_enet_mod8_tune, xTrans = log)
+```
+
+```{r}
+roc_glm_enet_mod8_besttune <- roc_glm_enet_mod8_tune$bestTune
+roc_glm_enet_mod8_besttune
+```
+
+```{r}
+roc_glm_enet_mod8_roc <- roc_glm_enet_mod8_tune$results[
+  roc_glm_enet_mod8_tune$results$alpha ==
+    roc_glm_enet_mod8_tune$bestTune$alpha & 
+  roc_glm_enet_mod8_tune$results$lambda ==
+    roc_glm_enet_mod8_tune$bestTune$lambda,
+  "ROC"]
+roc_glm_enet_mod8_roc
+```
+
+In the roc_glm_enet_pair tuned model, best alpha is 1 and lambda is 0.0035. In this condition, the ROC is 0.85.
+
+
+#### 2.4 Neural network
+```{r}
+set.seed(1234)
+roc_nnet_warmup <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "nnet",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl,
+                  trace = FALSE)
+```
+
+```{r}
+plot(roc_nnet_warmup, xTrans = log)
+```
+
+
+**Tune**
+```{r}
+tune_grid_neural <- expand.grid(size = c(1:5, 10),
+                                decay = c(0, 0.05, 0.1, 1, 2))
+
+roc_nnet_tune <- train(outcome ~ .,
+                    data = dfiii,
+                    method = "nnet",
+                    metric = my_metric,
+                    tuneGrid = tune_grid_neural,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl,
+                    trace = FALSE)
+
+plot(roc_nnet_tune, xTrans = log)
+```
+
+```{r}
+roc_nnet_tune_besttune <- roc_nnet_tune$bestTune
+roc_nnet_tune_besttune
+```
+
+```{r}
+roc_nnet_besttune <- roc_nnet_tune$bestTune
+roc_nnet_roc <- roc_nnet_tune$results[
+  roc_nnet_tune$results$size == roc_nnet_tune$bestTune$size & 
+  roc_nnet_tune$results$decay == roc_nnet_tune$bestTune$decay,
+  "ROC"]
+roc_nnet_roc
+```
+
+For Neural network model, the best size is 3 and the decay is 0.1.In this condition, the rmse is 0.85.
+
+
+#### 2.5 Random forest
+```{r}
+set.seed(1234)
+roc_rf_warmup <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "rf",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl,
+                  trace = FALSE)
+```
+
+```{r}
+plot(roc_rf_warmup, xTrans = log)
+```
+
+
+**Tune**
+```{r}
+set.seed(1234)
+roc_rf_tune <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "rf",
+                  metric = my_metric,
+                  trControl = my_ctrl,
+                  tuneGrid = expand.grid(mtry = seq(2, 8, by = 1)),
+                  importance = TRUE)
+```
+
+```{r}
+plot(roc_rf_tune, xTrans = log)
+```
+
+
+#### 2.6 Gradient boosted tree
+```{r}
+set.seed(1234)
+roc_gbm_warmup <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "gbm",
+                      metric = my_metric,
+                      trControl = my_ctrl,
+                      verbose = FALSE)
+```
+
+```{r}
+plot(roc_gbm_warmup, xTrans = log)
+```
+
+**Tune**
+
+```{r}
+gbm_grid <- expand.grid(n.trees = c(100, 150, 300, 500, 750, 1000),
+                        shrinkage = c(0.01, 0.1),
+                        interaction.depth = roc_gbm_warmup$bestTune$interaction.depth,
+                        n.minobsinnode = roc_gbm_warmup$bestTune$n.minobsinnode)
+```
+
+```{r}
+set.seed(1234)
+roc_gbm_tune <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "gbm",
+                      metric = my_metric,
+                      tuneGrid = gbm_grid,
+                      trControl = my_ctrl,
+                      verbose=FALSE)
+```
+
+```{r}
+plot(roc_gbm_tune, xTrans = log)
+```
+
+#### 2.7 SVM
+```{r}
+set.seed(1234)
+roc_svm_warmup <- train(outcome ~ .,
+                 data = dfiii,
+                 method = "svmRadial",
+                 metric = my_metric,
+                 preProcess = c("center", "scale"),
+                 trControl = my_ctrl)
+
+plot(roc_svm_warmup)
+```
+**Tune**
+```{r}
+svm_grid <- expand.grid(
+  .C = 2^seq(-5, 5, by = 1),
+  .sigma = 2^seq(-15, -5, by = 1)
+)
+
+
+set.seed(1234)
+roc_svm_tuned <- train(outcome ~ .,
+                 data = dfiii,
+                 method = "svmRadial",
+                 metric = my_metric,
+                 tuneGrid = svm_grid,
+                 preProcess = c("center", "scale"),
+                 trControl = my_ctrl)
+```
+
+```{r}
+plot(roc_svm_tuned, xTrans = log)
+```
+
+
+#### 2.8 PLS
+```{r}
+set.seed(1234)
+roc_pls_warmup <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "pls",
+                      metric = my_metric,
+                      preProcess = c("center", "scale"),
+                      trControl = my_ctrl)
+```
+
+```{r}
+plot(roc_pls_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+set.seed(1234)
+PLS_tuneGrid <- expand.grid(
+  .ncomp = seq(1, 10, by = 1)
+)
+
+roc_pls_tune <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "pls",
+                      metric = my_metric,
+                      tuneGrid = PLS_tuneGrid,
+                      preProcess = c("center", "scale"),
+                      trControl = my_ctrl)
+```
+
+```{r}
+plot(roc_pls_tune, xTrans = log)
+```
+
+
+
+### 3. ROC Model Evaluation
+#### 3.1 Identify the best model.
+```{r}
+ROC_perform <- resamples(list(GLM_ADD = roc_glm_add,
+                                 GLM_PAIR = roc_glm_pair,
+                                 GLM_MOD6 = roc_glm_mod6,
+                                 GLM_MOD8 = roc_glm_mod8,
+                                 ENET_PAIR_WARMUP = roc_glm_enet_pair_warmup,
+                                 ENET_PAIR_TUNE = roc_glm_enet_pair_tuned,
+                                 ENET_MOD8_WARMUP = roc_glm_enet_mod8_warmup,
+                                 ENET_MOD8_TUNE = roc_glm_enet_mod8_tune,
+                                 ENET_MOD9_WARMUP = roc_glm_enet_mod9_warmup,
+                                 ENET_MOD9_TUNE = roc_glm_enet_mod9_tune,
+                                 GBM_WARMUP = roc_gbm_warmup,
+                                 GBM_TUNE = roc_gbm_tune,
+                                 NNET_WARMUP = roc_nnet_warmup,
+                                 NNET_TUNE = roc_nnet_tune,
+                                 RF_WARMUP = roc_rf_warmup,
+                                 RF_TUNE = roc_rf_tune,
+                                 SVM_WARMUP = roc_svm_warmup,
+                                 SVM_TUNE = roc_svm_tuned,
+                                 PLS_TUNE = roc_pls_tune,
+                                 PLS_WARWUP = roc_pls_warmup
+                                 )
+                            )
+```
+
+### 4. Accuracy
+#### 4.1 Train parameter
+```{r}
+my_ctrl_acc <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+my_metric_acc <- "Accuracy"
+```
+
+#### 4.2 Build Model
+**All categorical and continuous inputs - linear additive features**
+```{r}
+set.seed(1234)
+acc_glm_add <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+acc_glm_add
+```
+**Add categorical inputs to all main effect and all pairwise interactions of continuous inputs**
+```{r}
+set.seed(1234)
+acc_glm_pair <- train(outcome ~ (.)^2 + Lightness + Saturation,
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+acc_glm_pair
+```
+
+**The 2 models selected from iiiA)**
+```{r}
+set.seed(1234)
+acc_glm_mod4 <- train(outcome ~ (R + G + B + Hue)^2 + (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+acc_glm_mod4
+```
+
+```{r}
+acc_glm_mod8 <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2)) + (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glm",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+acc_glm_mod8
+```
+#### 4.3 Regularized regression with Elastic net - ACC
+```{r}
+set.seed(1234)
+acc_glm_enet_pair_warmup <- train(outcome ~ (.)^2 + Lightness + Saturation,
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+plot(acc_glm_enet_pair_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+tune_grid_enet_pair <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                          seq(
+                            log(min(acc_glm_enet_pair_warmup$results$lambda)),
+                          log(max(acc_glm_enet_pair_warmup$results$lambda)),
+                          length.out = 25)))
+
+set.seed(1234)
+acc_glm_enet_pair_tuned <- train(outcome ~ (.)^2 + Lightness + Saturation,
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric_acc,
+                  tuneGrid = tune_grid_enet_pair,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+plot(acc_glm_enet_pair_tuned, xTrans = log)
+```
+
+
+
+
+```{r}
+set.seed(1234)
+acc_glm_enet_mod9_warmup <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) * (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+```
+
+```{r}
+plot(acc_glm_enet_mod9_warmup, xTrans = log)
+```
+
+
+**Tune**
+```{r}
+tune_grid_enet_mod9 <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                          seq(
+                            log(min(acc_glm_enet_mod9_warmup$results$lambda)),
+                          log(max(acc_glm_enet_mod9_warmup$results$lambda)),
+                          length.out = 25)))
+
+set.seed(1234)
+acc_glm_enet_mod9_tuned <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) * (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric_acc,
+                  tuneGrid = tune_grid_enet_mod9,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+```
+
+```{r}
+plot(acc_glm_enet_mod9_tuned, xTrans = log)
+```
+
+
+
+```{r}
+set.seed(1234)
+acc_glm_enet_mod8_warmup <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2)) + (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+acc_glm_enet_mod8_warmup
+```
+
+
+**Tune**
+```{r}
+tune_grid_enet_mod8 <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                          seq(
+                            log(min(acc_glm_enet_mod8_warmup$results$lambda)),
+                          log(max(acc_glm_enet_mod8_warmup$results$lambda)),
+                          length.out = 25)))
+
+set.seed(1234)
+acc_glm_enet_mod8_tuned <- train(outcome ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2)) + (Saturation + Lightness),
+                  data = dfiii,
+                  method = "glmnet",
+                  metric = my_metric_acc,
+                  tuneGrid = tune_grid_enet_mod8,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc)
+
+plot(acc_glm_enet_mod8_tuned, xTrans = log)
+```
+
+
+
+#### 4.4 Neural network
+```{r}
+set.seed(1234)
+acc_nnet_warmup <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "nnet",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc,
+                  trace = FALSE)
+```
+
+```{r}
+plot(acc_nnet_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+tune_grid_neural <- expand.grid(size = c(5, 10, 20),
+                                decay = c(0, 0.05, 0.1, 1, 2))
+
+acc_nnet_tune <- train(outcome ~ .,
+                    data = dfiii,
+                    method = "nnet",
+                    metric = my_metric_acc,
+                    tuneGrid = tune_grid_neural,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl_acc,
+                    trace = FALSE)
+
+plot(acc_nnet_tune, xTrans = log)
+```
+
+
+#### 4.5 Random forest - ACC
+```{r}
+set.seed(1234)
+acc_rf_warmup <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "rf",
+                  metric = my_metric_acc,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl_acc,
+                  trace = FALSE)
+```
+
+```{r}
+plot(acc_rf_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+set.seed(1234)
+acc_rf_tune <- train(outcome ~ .,
+                  data = dfiii,
+                  method = "rf",
+                  metric = my_metric_acc,
+                  trControl = my_ctrl_acc,
+                  tuneGrid = expand.grid(mtry = seq(2, 8, by = 1)),
+                  importance = TRUE)
+```
+
+```{r}
+plot(acc_rf_tune, xTrans = log)
+```
+
+#### 4.6 Gradient boosted tree - ACC
+```{r}
+set.seed(1234)
+acc_gbm_warmup <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "gbm",
+                      metric = my_metric_acc,
+                      trControl = my_ctrl_acc,
+                      verbose = FALSE)
+
+plot(acc_gbm_warmup, xTrans = log)
+```
+**Tune**
+```{r}
+acc_gbm_grid <- expand.grid(n.trees = c(100, 150, 300, 500, 750, 1000),
+                        shrinkage = c(0.01, 0.1),
+                        interaction.depth = acc_gbm_warmup$bestTune$interaction.depth,
+                        n.minobsinnode = acc_gbm_warmup$bestTune$n.minobsinnode)
+
+set.seed(1234)
+acc_gbm_tune <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "gbm",
+                      metric = my_metric_acc,
+                      tuneGrid = acc_gbm_grid,
+                      trControl = my_ctrl_acc,
+                      verbose=FALSE)
+
+plot(acc_gbm_tune, xTrans = log)
+```
+
+#### 2.7 SVM - ACC
+```{r}
+set.seed(1234)
+acc_svm_warmup <- train(outcome ~ .,
+                 data = dfiii,
+                 method = "svmRadial",
+                 metric = my_metric_acc,
+                 preProcess = c("center", "scale"),
+                 trControl = my_ctrl_acc)
+
+plot(acc_svm_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+set.seed(1234)
+acc_svm_tuned <- train(outcome ~ .,
+                 data = dfiii,
+                 method = "svmRadial",
+                 metric = my_metric_acc,
+                 tuneGrid = svm_grid,
+                 preProcess = c("center", "scale"),
+                 trControl = my_ctrl_acc)
+```
+
+```{r}
+plot(acc_svm_tuned, xTrans = log)
+```
+
+
+#### 2.8 PLS
+```{r}
+set.seed(1234)
+acc_pls_warmup <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "pls",
+                      metric = my_metric_acc,
+                      preProcess = c("center", "scale"),
+                      trControl = my_ctrl_acc)
+
+plot(acc_pls_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+set.seed(1234)
+acc_pls_tune <- train(outcome ~ .,
+                      data = dfiii,
+                      method = "pls",
+                      metric = my_metric_acc,
+                      preProcess = c("center", "scale"),
+                      trControl = my_ctrl_acc)
+
+plot(acc_pls_tune)
+```
+
+
+
+### 5. ACC Model Evaluation
+#### 3.1 Identify the best model.
+```{r}
+ACC_perform <- resamples(list(GLM_ADD = acc_glm_add,
+                                 GLM_PAIR = acc_glm_pair,
+                                 GLM_MOD4 = acc_glm_mod4,
+                                 ENET_PAIR_WARMUP = acc_glm_enet_pair_warmup,
+                                 ENET_PAIR_TUNE = acc_glm_enet_pair_tuned,
+                                 ENET_MOD8_WARMUP = acc_glm_enet_mod8_warmup,
+                                 ENET_MOD8_TUNE = acc_glm_enet_mod8_tuned,
+                                 ENET_MOD9_WARMUP = acc_glm_enet_mod9_warmup,
+                                 ENET_MOD9_TUNE = acc_glm_enet_mod9_tuned,
+                                 GBM_WARMUP = acc_gbm_warmup,
+                                 GBM_TUNE = acc_gbm_tune,
+                                 NNET_WARMUP = acc_nnet_warmup,
+                                 NNET_TUNE = acc_nnet_tune,
+                                 RF_WARMUP = acc_rf_warmup,
+                                 RF_TUNE = acc_rf_tune,
+                                 SVM_WARMUP = acc_svm_warmup,
+                                 SVM_TUNE = acc_svm_tuned,
+                                 PLS_WARMUP = acc_pls_warmup,
+                                 PLS_TUNE = acc_pls_tune
+                                 )
+                            )
+```
+
+
+
+### 6. Compare ROC and Accurancy
+```{r}
+dotplot(ROC_perform, metric = "ROC")
+```
+
+```{r}
+dotplot(ACC_perform, metric = "Accuracy")
+```
+
+**Which model is the best if you are interested in maximizing Accuracy compared to maximizing the Area Under the ROC Curve (ROC AUC)?**
+In Accuracy, Random Forest mod is the best, while in ROC curve, GBM tuned model is the best.
+
+```{r}
+acc_gbm_tune %>% readr::write_rds('Model/acc_gbm_tune.rds')
+```
+
+
+

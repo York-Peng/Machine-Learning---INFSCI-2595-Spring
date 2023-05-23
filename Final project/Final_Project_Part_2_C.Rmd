@@ -1,0 +1,299 @@
+---
+title: "Final_Project_Part_2_C"
+author: "Peng Yuan"
+date: '2023-04-20'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## iiC) Linear models Predictions
+### 1. Load package, data and model
+#### 1.1 Load package
+```{r,1.1_solution}
+library(tidyverse)
+library(caret)
+library(coefplot)
+library(rstanarm)
+library(splines)
+```
+
+#### 1.2 Load data
+```{r,1.2_solution}
+df <- readr::read_csv("paint_project_train_data.csv", col_names = TRUE)
+
+dfii_ready <- df %>% 
+  mutate(y = boot::logit( (response - 0) / (100 - 0) ) ) %>% 
+  subset(select = c(R, G, B, 
+         Lightness, Saturation, Hue,response,
+         y))
+
+
+dfii <- dfii_ready %>%
+  subset(select = c(R, G, B, Hue)) %>% 
+  scale() %>% as.data.frame() %>%
+  bind_cols(dfii_ready %>% subset(select = c(Lightness, Saturation, y)))
+
+
+
+dfii %>% glimpse()
+```
+
+### 1.3 Load model
+```{r}
+mod5 <- lm(y ~ (R + G + B + Hue) * (Saturation + Lightness), dfii)
+
+mod10 <- lm(y ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) + (Saturation * Lightness), dfii)
+```
+
+
+```{r}
+stan_lm_mod5 <- stan_lm(formula(mod5), 
+                         data = dfii, 
+                         prior = R2(location = 0.75),
+                         chains = 1,
+                         iter = 300,
+                         seed = 123123,
+                         refresh = 0)
+```
+
+```{r}
+stan_lm_mod10 <- stan_lm(formula(mod10), 
+                         data = dfii, 
+                         prior = R2(location = 0.75), 
+                         seed = 123123,
+                         chains = 1,
+                         iter = 300,
+                         refresh = 0)
+```
+
+
+
+
+### 2 Predictions -  Bayesian Model
+#### 2.1 Build prediction model
+
+```{r,2.1_build model}
+viz_grid <- expand.grid(R = seq(min(dfii$R), max(dfii$R), length.out = 25),
+                        G = median(dfii$G),
+                        B = median(dfii$B),
+                        Lightness = "dark",
+                        Saturation = "gray",
+                        Hue = quantile(dfii$Hue, 
+                                           probs = c(0.05, 0.25, 0.5, 0.75, 0.95), 
+                                           na.rm = TRUE),
+                        KEEP.OUT.ATTRS = FALSE,
+                        stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tibble::as_tibble()
+
+viz_grid %>% glimpse()
+```
+
+#### 2.2 Draw predictive mean trend
+**model 5**
+```{r}
+posterior_predict(stan_lm_mod5, newdata = viz_grid) %>% 
+  as.data.frame() %>% tibble::as_tibble() %>% 
+  tibble::rowid_to_column("post_id") %>% 
+  pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+  mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+  group_by(pred_id) %>% 
+  summarise(num_post = n(),
+            y_avg = mean(value),
+            y_lwr = quantile(value, 0.05),
+            y_upr = quantile(value, 0.95)) %>% 
+  ungroup() %>% 
+  left_join(viz_grid %>% tibble::rowid_to_column("pred_id"),
+            by = "pred_id") %>% 
+  ggplot(mapping = aes(x = R)) +
+  geom_ribbon(mapping = aes(ymin = y_lwr,
+                            ymax = y_upr,
+                            group = Hue,
+                            fill = as.factor(Hue)),
+              alpha = 0.5) +
+  geom_line(mapping = aes(y = y_avg,
+                          group = Hue,
+                          color = as.factor(Hue)),
+            size = 1.) +
+  facet_wrap(~Lightness, labeller = "label_both") +
+  scale_fill_viridis_d("Hue") +
+  scale_color_viridis_d("Hue") +
+  labs(y = "y") +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+**model 10**
+```{r}
+posterior_predict(stan_lm_mod10, newdata = viz_grid) %>% 
+  as.data.frame() %>% tibble::as_tibble() %>% 
+  tibble::rowid_to_column("post_id") %>% 
+  pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+  mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+  group_by(pred_id) %>% 
+  summarise(num_post = n(),
+            y_avg = mean(value),
+            y_lwr = quantile(value, 0.05),
+            y_upr = quantile(value, 0.95)) %>% 
+  ungroup() %>% 
+  left_join(viz_grid %>% tibble::rowid_to_column("pred_id"),
+            by = "pred_id") %>% 
+  ggplot(mapping = aes(x = R)) +
+  geom_ribbon(mapping = aes(ymin = y_lwr,
+                            ymax = y_upr,
+                            group = Hue,
+                            fill = as.factor(Hue)),
+              alpha = 0.5) +
+  geom_line(mapping = aes(y = y_avg,
+                          group = Hue,
+                          color = as.factor(Hue)),
+            size = 1.) +
+  facet_wrap(~Lightness, labeller = "label_both") +
+  scale_fill_viridis_d("Hue") +
+  scale_color_viridis_d("Hue") +
+  labs(y = "y") +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+####  2.3 Confidence interval on the mean and Prediction interval
+**Model 5**
+```{r}
+posterior_predict(stan_lm_mod5, newdata = viz_grid) %>% 
+  as.data.frame() %>% tibble::as_tibble() %>% 
+  tibble::rowid_to_column("post_id") %>% 
+  pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+  mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+  group_by(pred_id) %>% 
+  summarise(y_avg = mean(value),
+            y_lwr = quantile(value, 0.05),
+            y_upr = quantile(value, 0.95)) %>% 
+  ungroup() %>% 
+  left_join(posterior_linpred(stan_lm_mod5, newdata = viz_grid) %>% 
+              as.data.frame() %>% tibble::as_tibble() %>% 
+              tibble::rowid_to_column("post_id") %>% 
+              pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+              mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+              group_by(pred_id) %>% 
+              summarise(trend_avg = mean(value),
+                        trend_lwr = quantile(value, 0.05),
+                        trend_upr = quantile(value, 0.95)) %>% 
+              ungroup(),
+            by = "pred_id") %>% 
+  left_join(viz_grid %>% tibble::rowid_to_column("pred_id"),
+            by = "pred_id") %>% 
+  ggplot(mapping = aes(R)) +
+  geom_ribbon(mapping = aes(ymin = y_lwr, ymax = y_upr,
+                            group = Hue), 
+              fill = "darkorange") +
+  geom_ribbon(mapping = aes(ymin = trend_lwr, ymax = trend_upr,
+                            group = Hue),
+              fill = "grey") +
+  geom_line(mapping = aes(y = trend_avg,
+                          group = Hue),
+            color = "black", size = 0.85) +
+  facet_wrap(~Hue, labeller = "label_both") +
+  labs(y = "y") +
+  theme_bw()
+```
+**Model 10**
+```{r}
+posterior_predict(stan_lm_mod10, newdata = viz_grid) %>% 
+  as.data.frame() %>% tibble::as_tibble() %>% 
+  tibble::rowid_to_column("post_id") %>% 
+  pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+  mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+  group_by(pred_id) %>% 
+  summarise(y_avg = mean(value),
+            y_lwr = quantile(value, 0.05),
+            y_upr = quantile(value, 0.95)) %>% 
+  ungroup() %>% 
+  left_join(posterior_linpred(stan_lm_mod10, newdata = viz_grid) %>% 
+              as.data.frame() %>% tibble::as_tibble() %>% 
+              tibble::rowid_to_column("post_id") %>% 
+              pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+              mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+              group_by(pred_id) %>% 
+              summarise(trend_avg = mean(value),
+                        trend_lwr = quantile(value, 0.05),
+                        trend_upr = quantile(value, 0.95)) %>% 
+              ungroup(),
+            by = "pred_id") %>% 
+  left_join(viz_grid %>% tibble::rowid_to_column("pred_id"),
+            by = "pred_id") %>% 
+  ggplot(mapping = aes(R)) +
+  geom_ribbon(mapping = aes(ymin = y_lwr, ymax = y_upr,
+                            group = Hue), 
+              fill = "darkorange") +
+  geom_ribbon(mapping = aes(ymin = trend_lwr, ymax = trend_upr,
+                            group = Hue),
+              fill = "grey") +
+  geom_line(mapping = aes(y = trend_avg,
+                          group = Hue),
+            color = "black", size = 0.85) +
+  facet_wrap(~Hue, labeller = "label_both") +
+  labs(y = "y") +
+  theme_bw()
+```
+
+#### 2.4 
+**Model 5**
+```{r}
+posterior_predict(stan_lm_mod5, newdata = viz_grid) %>% 
+  as.data.frame() %>% tibble::as_tibble() %>% 
+  tibble::rowid_to_column("post_id") %>% 
+  pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+  mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+  group_by(pred_id) %>% 
+  summarise(num_post = n(),
+            y_avg = mean(value),
+            y_lwr = quantile(value, 0.05),
+            y_upr = quantile(value, 0.95),
+            prob_grt_0 = mean(value > 0)) %>% 
+  ungroup() %>% 
+  left_join(viz_grid %>% tibble::rowid_to_column("pred_id"),
+            by = "pred_id") %>% 
+  ggplot(mapping = aes(x = R, y = prob_grt_0)) +
+  geom_line(mapping = aes(group = Hue,
+                          color = as.factor(Hue)),
+            size = 1.) +
+  scale_fill_viridis_d("Hue") +
+  scale_color_viridis_d("Hue") +
+  labs(y = "Probability y is greater than 0") +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+**Model 10**
+```{r}
+posterior_predict(stan_lm_mod10, newdata = viz_grid) %>% 
+  as.data.frame() %>% tibble::as_tibble() %>% 
+  tibble::rowid_to_column("post_id") %>% 
+  pivot_longer(!c("post_id"), names_to = 'pred_id') %>% 
+  mutate(across(.cols = 'pred_id', .fns = as.numeric)) %>% 
+  group_by(pred_id) %>% 
+  summarise(num_post = n(),
+            y_avg = mean(value),
+            y_lwr = quantile(value, 0.05),
+            y_upr = quantile(value, 0.95),
+            prob_grt_0 = mean(value > 0)) %>% 
+  ungroup() %>% 
+  left_join(viz_grid %>% tibble::rowid_to_column("pred_id"),
+            by = "pred_id") %>% 
+  ggplot(mapping = aes(x = R, y = prob_grt_0)) +
+  geom_line(mapping = aes(group = Hue,
+                          color = as.factor(Hue)),
+            size = 1.) +
+  scale_fill_viridis_d("Hue") +
+  scale_color_viridis_d("Hue") +
+  labs(y = "Probability y is greater than 0") +
+  theme_bw() +
+  theme(legend.position = "top")
+```
+
+**If the predictive trends are consistent between the 2 selected linear models?**
+According to the prediction interval and predictive mean trend, I think they are roughly consistence.
+
+

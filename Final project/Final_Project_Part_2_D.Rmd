@@ -1,0 +1,499 @@
+---
+title: "Final_Project_Part_2_D"
+author: "Peng Yuan"
+date: '2023-04-18'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##  Train/tune with resampling
+### Load package and Data
+```{r}
+library(tidyverse)
+library(caret)
+library(coefplot)
+library(rstanarm)
+library(splines)
+library(kernlab)
+```
+
+```{r}
+df <- readr::read_csv("paint_project_train_data.csv", col_names = TRUE)
+
+dfii_ready <- df %>% 
+  mutate(y = boot::logit( (response - 0) / (100 - 0) ) ) %>% 
+  subset(select = c(R, G, B, 
+         Lightness, Saturation, Hue,response,
+         y))
+
+dfii <- dfii_ready %>%
+  subset(select = c(R, G, B, Hue)) %>% 
+  scale() %>% as.data.frame() %>%
+  bind_cols(dfii_ready %>% subset(select = c(Lightness, Saturation, y)))
+
+
+
+dfii %>% glimpse()
+```
+
+
+### Train Model
+```{r}
+my_ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+my_metric <- "RMSE"
+```
+
+#### Linear models
+All categorical and continuous inputs - linear additive features
+```{r}
+set.seed(1234)
+fit_lm_add <- train(y ~ R + G + B + Hue + Lightness + Saturation,
+                  data = dfii,
+                  method = "lm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+fit_lm_add
+```
+
+**Add categorical inputs to all main effect and all pairwise interactions of continuous inputs**
+```{r}
+set.seed(1234)
+fit_lm_pair <- train(y ~ Lightness + Saturation + (R + G + B + Hue)^2,
+                  data = dfii,
+                  method = "lm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+fit_lm_pair
+```
+
+
+**The 2 models selected from iiA) (if they are not one of the two above)**
+```{r}
+set.seed(1234)
+fit_lm_mod6 <- train(y ~ (R + G + B + Hue)^2 + (Saturation + Lightness),
+                  data = dfii,
+                  method = "lm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+fit_lm_mod6
+```
+
+```{r}
+set.seed(1234)
+fit_lm_mod2 <- train(y ~ R + G + B + Hue,
+                  data = dfii,
+                  method = "lm",
+                  metric = my_metric,
+                  preProcess = c("center", "scale"),
+                  trControl = my_ctrl)
+
+fit_lm_mod2
+```
+
+#### Regularized regression with Elastic net
+Add categorical inputs to all main effect and all pairwise interactions of continuous inputs
+```{r}
+set.seed(1234)
+fit_enet_pair_warmup <- train(y ~ Lightness + Saturation + (R + G + B + Hue)^2,
+                    data = dfii,
+                    method = "glmnet",
+                    metric = my_metric,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl)
+
+plot(fit_enet_pair_warmup)
+```
+
+```{r}
+tune_grid_add <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                          seq(log(min(fit_enet_pair_warmup$results$lambda)),
+                          log(max(fit_enet_pair_warmup$results$lambda)),
+                          length.out = 25)))
+
+set.seed(1234)
+fit_enet_pair_add <- train(y ~ Lightness + Saturation + (R + G + B + Hue)^2,
+                    data = dfii,
+                    method = "glmnet",
+                    metric = my_metric,
+                    tuneGrid = tune_grid_add,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl)
+
+plot(fit_enet_pair_add)
+```
+
+
+```{r}
+enet_pair_besttune <- fit_enet_pair_add$bestTune
+enet_pair_besttune
+```
+
+```{r}
+enet_pair_tune_rmse <- fit_enet_pair_add$results[
+  fit_enet_pair_add$results$alpha == fit_enet_pair_add$bestTune$alpha & 
+  fit_enet_pair_add$results$lambda == fit_enet_pair_add$bestTune$lambda,
+  "RMSE"]
+
+fit_enet_pair_add$results
+enet_pair_tune_rmse
+```
+
+For the Elastic net - pair model,the best alpha is 0.25 and lambda is 0.0023. In this condition, the rmse is 0.08.
+
+
+The more complex of the 2 models selected from iiA)
+```{r}
+fit_enet_mod10_warmup <- train(y ~ (I(R^2) + I(G^2) + I(B^2) + I(Hue^2) + R * G * B * Hue) + (Saturation * Lightness),
+                    data = dfii,
+                    method = "glmnet",
+                    metric = my_metric,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl)
+
+plot(fit_enet_mod10_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+set.seed(1234)
+tune_grid_mod10 <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                          seq(log(min(fit_enet_mod10_warmup$results$lambda)),
+                          log(max(fit_enet_mod10_warmup$results$lambda)),
+                          length.out = 25)))
+
+fit_enet_mod10_tune <- train(y ~ Lightness + Saturation + (R + G + B + Hue)^2,
+                    data = dfii,
+                    method = "glmnet",
+                    metric = my_metric,
+                    tuneGrid = tune_grid_mod10,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl)
+
+plot(fit_enet_mod10_tune, xTrans = log)
+```
+
+
+```{r}
+enet_pair_mod10_besttune <- fit_enet_mod10_tune$bestTune
+enet_pair_mod10_tune_rmse <- fit_enet_mod10_tune$results[
+  fit_enet_mod10_tune$results$alpha == fit_enet_mod10_tune$bestTune$alpha & 
+  fit_enet_mod10_tune$results$lambda == fit_enet_mod10_tune$bestTune$lambda,
+  "RMSE"]
+enet_pair_mod10_besttune
+enet_pair_mod10_tune_rmse
+```
+
+For Elastic net - mod10 model, the best alpha is 0.25 and the lambda is 0.0023.In this condition, the rmse is 0.081.
+
+
+
+```{r}
+set.seed(1234)
+fit_enet_mod5_warmup <- train(y ~ (R + G + B + Hue) * (Saturation + Lightness),
+                       data = dfii,
+                       method = "glmnet",
+                       metric = my_metric,
+                       preProcess = c("center", "scale"),
+                       trControl = my_ctrl)
+
+plot(fit_enet_mod5_warmup, xTrans = log)
+```
+
+**Tune**
+```{r}
+set.seed(1234)
+tune_grid_mod5 <- expand.grid(.alpha = seq(0, 1, length.out = 5),  
+                         .lambda = exp(
+                          seq(log(min(fit_enet_mod5_warmup$results$lambda)),
+                          log(max(fit_enet_mod5_warmup$results$lambda)),
+                          length.out = 25)))
+
+fit_enet_mod5_tune <- train(y ~ Lightness + Saturation + (R + G + B + Hue)^2,
+                    data = dfii,
+                    method = "glmnet",
+                    metric = my_metric,
+                    tuneGrid = tune_grid_mod5,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl)
+
+plot(fit_enet_mod5_tune, xTrans = log)
+```
+
+
+```{r}
+enet_pair_mod5_besttune <- fit_enet_mod5_tune$bestTune
+enet_pair_mod5_tune_rmse <- fit_enet_mod5_tune$results[
+  fit_enet_mod5_tune$results$alpha == fit_enet_mod5_tune$bestTune$alpha & 
+  fit_enet_mod5_tune$results$lambda == fit_enet_mod5_tune$bestTune$lambda,
+  "RMSE"]
+enet_pair_mod5_besttune
+enet_pair_mod5_tune_rmse
+```
+
+For Elastic net - mod5 model, the best alpha is 0.25 and the lambda is 0.0023.In this condition, the rmse is 0.081.
+
+
+
+#### Neural network
+```{r}
+set.seed(1234)
+
+fit_nnet_warmup <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                    data = dfii,
+                    method = "nnet",
+                    metric = my_metric,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl,
+                    trace = FALSE,
+                    linout = TRUE)
+```
+
+```{r}
+plot(fit_nnet_warmup, xTrans = log)
+```
+
+**Tunning Grid model**
+```{r}
+tune_grid_neural <- expand.grid(size = c(5, 10, 20),
+                                decay = c(0, 0.05, 0.1, 1, 2))
+
+fit_nnet_tune <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                    data = dfii,
+                    method = "nnet",
+                    metric = my_metric,
+                    tuneGrid = tune_grid_neural,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl,
+                    trace = FALSE,
+                    linout = TRUE)
+
+
+fit_nnet_besttune <- fit_nnet_tune$bestTune
+fit_nnet_tune_rmse <- fit_nnet_tune$results[
+  fit_nnet_tune$results$size == fit_nnet_tune$bestTune$size & 
+  fit_nnet_tune$results$decay == fit_nnet_tune$bestTune$decay,
+  "RMSE"]
+fit_nnet_besttune
+fit_nnet_tune_rmse
+```
+
+```{r}
+plot(fit_nnet_tune, xTrans = log)
+```
+
+For Neural network model, the best size is 20 and the decay is 0.In this condition, the rmse is 0.054.
+
+
+#### Random Forest
+```{r}
+set.seed(1234)
+fit_rf_warmup <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                     data = dfii,
+                     method = "rf",
+                     metric = "RMSE",
+                     trControl = my_ctrl,
+                     importance = TRUE)
+
+fit_rf_warmup
+```
+
+
+```{r}
+plot(fit_rf_warmup, xTrans = log)
+```
+
+
+**Tune**
+```{r}
+set.seed(1234)
+fit_rf_tune <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                     data = dfii,
+                     method = "rf",
+                     metric = "RMSE",
+                     trControl = my_ctrl,
+                     tuneGrid = expand.grid(mtry = seq(2, 8, by = 1)),
+                     importance = TRUE)
+```
+
+
+```{r}
+plot(fit_rf_tune, xTrans = log)
+```
+
+
+#### Gradient Boosted Tree
+```{r}
+set.seed(1234)
+fit_gbm_warmup <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                      data = dfii,
+                      method = "gbm",
+                      metric = my_metric,
+                      trControl = my_ctrl,
+                      verbose=FALSE)
+```
+
+```{r}
+plot(fit_gbm_warmup, xTrans = log)
+```
+
+**Tunning GBM model**
+```{r}
+gbm_grid <- expand.grid(n.trees = c(100, 150, 300, 500, 750, 1000),
+                        shrinkage = c(0.01, 0.1),
+                        interaction.depth = fit_gbm_warmup$bestTune$interaction.depth,
+                        n.minobsinnode = fit_gbm_warmup$bestTune$n.minobsinnode)
+
+set.seed(1234)
+fit_gbm_tune <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                      data = dfii,
+                      method = "gbm",
+                      metric = my_metric,
+                      tuneGrid = gbm_grid,
+                      trControl = my_ctrl,
+                      verbose=FALSE)
+```
+
+```{r}
+plot(fit_gbm_tune, xTrans = log)
+```
+
+#### SVM
+```{r}
+set.seed(1234)
+fit_svm_warmup <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                      data = dfii,
+                      method = "svmRadial",
+                      metric = my_metric,
+                      preProcess = c("center", "scale"),
+                      trControl = my_ctrl)
+```
+
+
+```{r}
+plot(fit_svm_warmup, xTrans = log)
+```
+
+
+**SVM Tune grid**
+```{r}
+set.seed(1234)
+svm_tune_grid <- expand.grid(
+  .C = 2^seq(-5, 5, by = 1),
+  .sigma = 2^seq(-15, -5, by = 1)
+)
+
+fit_svm_tune <- train(
+  y ~ R + G + B + Hue + Saturation + Lightness,
+  data = dfii,
+  method = "svmRadial",
+  metric = my_metric,
+  preProcess = c("center", "scale"),
+  trControl = my_ctrl,
+  tuneGrid = svm_tune_grid
+)
+```
+
+```{r}
+plot(fit_svm_tune, xTrans = log)
+```
+
+#### PLS
+```{r}
+set.seed(1234)
+fit_pls_warmup <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                      data = dfii,
+                      method = "pls",
+                      metric = my_metric,
+                      preProcess = c("center", "scale"),
+                      trControl = my_ctrl)
+```
+
+```{r}
+plot(fit_pls_warmup, xTrans = log)
+```
+
+```{r}
+set.seed(1234)
+PLS_tuneGrid <- expand.grid(
+  .ncomp = seq(1, 10, by = 1)
+)
+
+fit_pls_tune <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                      data = dfii,
+                      method = "pls",
+                      metric = my_metric,
+                      preProcess = c("center", "scale"),
+                      trControl = my_ctrl,
+                      tuneGrid = PLS_tuneGrid)
+```
+
+```{r}
+plot(fit_pls_tune, xTrans = log)
+```
+
+
+
+
+### Compare the models
+```{r}
+my_performance <- resamples(list(FIT_LM_ADD = fit_lm_add,
+                                 FIT_LM_PAIR = fit_lm_pair,
+                                 FIT_LM_MOD6 = fit_lm_mod6,
+                                 FIT_LM_MOD2 = fit_lm_mod2,
+                                 ENET_PAIR_WARMUP = fit_enet_pair_warmup,
+                                 ENET_PARI_TUNE = fit_enet_pair_add,
+                                 ENET_MOD10_WARMUP = fit_enet_mod10_warmup,
+                                 ENET_MOD10_TUNE = fit_enet_mod10_tune,
+                                 ENET_MOD5_WARMUP = fit_enet_mod5_warmup,
+                                 ENET_MOD5_TUNE = fit_enet_mod5_tune,
+                                 NNET_WARMUP = fit_nnet_warmup,
+                                 NNET_TUNE = fit_nnet_tune,
+                                 RF_WARMUP = fit_rf_warmup,
+                                 RF_TUNE = fit_rf_tune,
+                                 GBM_WARMUP = fit_gbm_warmup,
+                                 GBM_TUNE = fit_gbm_tune,
+                                 SVM_WARMUP = fit_svm_warmup,
+                                 SVM_TUNE = fit_svm_tune,
+                                 PLS_WARMUP = fit_pls_warmup,
+                                 PLS_TUNE = fit_pls_tune
+                                 ))
+```
+
+```{r}
+dotplot(my_performance, metric = "RMSE", scales = 'free')
+```
+
+```{r}
+dotplot(my_performance, metric = "Rsquared")
+```
+Which model is the best?
+According to the RMSE and Rsquared, NEET_TUNE is the best model.
+
+
+```{r}
+plot(varImp(fit_nnet_tune), top = 10)
+```
+In NNET_TUNE model, Lightness-deep is the most important features.
+
+
+```{r}
+fit_nnet_tune %>% readr::write_rds("Model/fit_reg_nnet_tune.rds")
+```
+
+
+
+
+
+
+

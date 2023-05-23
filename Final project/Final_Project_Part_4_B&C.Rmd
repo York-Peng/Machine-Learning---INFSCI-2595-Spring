@@ -1,0 +1,319 @@
+---
+title: "Final_Project_Part_4_B&C"
+author: "Peng Yuan"
+date: '2023-04-23'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Interpretation – ivB) Input insights
+### 1. Load package & model
+```{r}
+library(caret)
+library(tidyverse)
+library(yardstick)
+library(dplyr)
+library(coefplot)
+library(rstanarm)
+```
+
+
+```{r}
+df_all <- readr::read_csv("paint_project_train_data.csv", col_names = TRUE)
+
+df_ready <- df_all %>% 
+  dplyr::mutate(y = boot::logit((response - 0) / (100 - 0) ) ) %>%
+  mutate(outcome = ifelse(outcome == 1, 'event', 'non_event'),
+         outcome = factor(outcome, levels = c('event', 'non_event')))
+  
+dfiv <- df_ready %>%
+  subset(select = c(R, G, B, Hue)) %>% 
+  scale() %>% as.data.frame() %>%
+  bind_cols(df_ready %>% subset(select = c(Lightness, Saturation, y,outcome)))
+
+dfiv %>% glimpse()
+```
+
+### 2. Reample hold-out set and identify the HARDEST & EASIEST combinations
+#### 2.1 Regression model
+```{r}
+my_ctrl_reg <- trainControl(method = 'cv', number = 5, savePredictions = TRUE)
+my_metric_reg <- "RMSE"
+```
+
+```{r}
+tune_grid_neural <- expand.grid(size = c(5, 10, 20),
+                                decay = c(0, 0.05, 0.1, 1, 2))
+
+best_reg_model <- train(y ~ R + G + B + Hue + Saturation + Lightness,
+                    data = dfiv,
+                    method = "nnet",
+                    metric = my_metric_reg,
+                    tuneGrid = tune_grid_neural,
+                    preProcess = c("center", "scale"),
+                    trControl = my_ctrl_reg,
+                    trace = FALSE,
+                    linout = TRUE)
+```
+
+
+```{r}
+reg_pred_df <- best_reg_model$pred %>% tibble::as_tibble() %>% 
+  filter(size == best_reg_model$bestTune$size,
+         decay == best_reg_model$bestTune$decay) %>% 
+  left_join(dfiv %>% 
+              tibble::rowid_to_column('rowIndex'),
+            by = 'rowIndex') %>%
+  mutate(comb_Sat_Light = paste(Lightness, Saturation, sep = "+"))
+
+reg_pred_df %>%  glimpse()
+```
+
+```{r}
+reg_pred_df %>% 
+  ggplot(mapping = aes(y = comb_Sat_Light, x = abs(pred - obs))) +
+  geom_boxplot() +
+  theme_bw()
+```
+
+```{r}
+reg_pred_df %>% 
+  ggplot(mapping = aes(y = Lightness, x = abs(pred - obs))) +
+  geom_boxplot(mapping = aes(fill = Saturation)) +
+  theme_bw()
+```
+
+For regression model, according to the image, I think the dark is the worst Saturation and the soft is the best Saturation. In addition, the worst Lightness is pure and the best is subdued. Thus, I think the EASIEST to predict combination is midtone+neutral and the HARDEST to predict combination is dark-pure.
+
+
+
+#### 2.2 Classification model
+```{r}
+my_ctrl_acc <- trainControl(method = 'cv', number = 5, savePredictions = TRUE)
+my_metric_acc <- "Accuracy"
+```
+
+```{r}
+set.seed(1234)
+acc_gbm_warmup <- train(outcome ~ R + G + B + Hue + Saturation + Lightness,
+                      data = dfiv,
+                      method = "gbm",
+                      metric = my_metric_acc,
+                      trControl = my_ctrl_acc,
+                      verbose = FALSE)
+
+acc_gbm_grid <- expand.grid(n.trees = c(100, 150, 300, 500, 750, 1000),
+                        shrinkage = c(0.01, 0.1),
+                        interaction.depth = acc_gbm_warmup$bestTune$interaction.depth,
+                        n.minobsinnode = acc_gbm_warmup$bestTune$n.minobsinnode)
+
+
+acc_gbm_tune <- train(outcome ~ R + G + B + Hue + Saturation + Lightness,
+                      data = dfiv,
+                      method = "gbm",
+                      metric = my_metric_acc,
+                      tuneGrid = acc_gbm_grid,
+                      trControl = my_ctrl_acc,
+                      verbose=FALSE)
+
+```
+
+```{r}
+class_pred_df <- acc_gbm_tune$pred %>% tibble::as_tibble() %>% 
+  filter(n.trees == acc_gbm_tune$bestTune$n.trees,
+         interaction.depth == acc_gbm_tune$bestTune$interaction.depth) %>% 
+  left_join(dfiv %>% 
+              tibble::rowid_to_column('rowIndex'),
+            by = 'rowIndex') %>%
+  mutate(comb_Sat_Light = paste(Lightness, Saturation, sep = "+"))
+
+class_pred_df %>%  glimpse()
+```
+
+```{r}
+Accuracy_df <- data.frame(Combin_name = character(0),
+                          Accuracy_value = numeric(0))
+```
+
+
+```{r}
+comb_list <- unique(class_pred_df$comb_Sat_Light)
+for (x in comb_list){
+  group_temp_df <- class_pred_df %>% filter(comb_Sat_Light == x)
+  Accuracy_temp <- confusionMatrix(group_temp_df$pred,group_temp_df$obs)$overall[1]
+  Accuracy_df <- add_row(Accuracy_df, Combin_name = x, Accuracy_value = Accuracy_temp)
+}
+```
+
+
+```{r}
+best_comb_class <- Accuracy_df$Combin_name[which.max(Accuracy_df$Accuracy_value)]
+
+
+worst_comb_class <- Accuracy_df$Combin_name[which.min(Accuracy_df$Accuracy_value)]
+
+
+print(paste("The EASIEST to predict combination is:", best_comb_class))
+print(paste("The HARDEST to predict combination is:", worst_comb_class))
+```
+
+Thus, In terms of the classification model, the HARDEST to predict combination is midtone+neutral and the EASIEST to predict combination is deep+bright.
+
+
+
+## Interpretation – ivC) Prediction insights
+### 1. Surface plots for the best performing regression mode
+#### 1.1 EASIEST to predict combination
+soft+subdued
+```{r}
+viz_grid_easy_reg <- expand.grid(
+                        R = seq(min(dfiv$R),
+                                max(dfiv$R),
+                                length.out = 101),
+                        G = seq(min(dfiv$G),
+                                max(dfiv$G),
+                                length.out = 101),
+                        B = median(dfiv$B),
+                        Lightness = "midtone",
+                        Saturation = "neutral",
+                        Hue = median(dfiv$Hue),
+                        KEEP.OUT.ATTRS = FALSE,
+                        stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tibble::as_tibble()
+
+viz_grid_easy_reg %>% glimpse()
+```
+```{r}
+viz_grid_easy_reg %>% 
+  mutate(pred = predict(best_reg_model,viz_grid_easy_reg)) %>%
+  ggplot(mapping = aes(x = G,y= R)) + 
+  geom_raster(mapping = aes(fill=pred)) + 
+  scale_fill_viridis_c() +
+  theme_bw()
+```
+**What conclusions can draw from your surface plots?**
+For the Easiest to predict regression model, pred represents the predicted value for each combination of R and G values. As the R and B values get closer to 1, the value of pred gets closer to 1, which indicates that the results of pre are very accurate.
+
+
+#### 1.2 HARDEST to predict combination
+dark-pure
+```{r}
+viz_grid_hard_reg <- expand.grid(
+                        R = seq(min(dfiv$R),
+                                max(dfiv$R),
+                                length.out = 101),
+                        G = seq(min(dfiv$G),
+                                max(dfiv$G),
+                                length.out = 101),
+                        B = median(dfiv$B),
+                        Lightness = "dark",
+                        Saturation = "pure",
+                        Hue = median(dfiv$Hue),
+                        KEEP.OUT.ATTRS = FALSE,
+                        stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tibble::as_tibble()
+
+viz_grid_hard_reg %>% glimpse()
+```
+
+```{r}
+viz_grid_hard_reg %>% 
+  mutate(pred = predict(best_reg_model,viz_grid_hard_reg)) %>%
+  ggplot(mapping = aes(x = G,y= R)) + 
+  geom_raster(mapping = aes(fill=pred)) + 
+  scale_fill_viridis_c() +
+  theme_bw()
+```
+**What conclusions can draw from your surface plots?**
+The result is similar as the Easiest to predict regression model.
+
+
+
+
+### 2. Surface plots for the best performing classification model
+#### 2.1 EASIEST to predict combination
+light+bright
+```{r}
+viz_grid_easy_class <- expand.grid(
+                        R = median(dfiv$R),
+                        G = seq(min(dfiv$G),
+                                max(dfiv$G),
+                                length.out = 101),
+                        B = median(dfiv$B),
+                        Lightness = "light",
+                        Saturation = "bright",
+                        Hue = seq(min(dfiv$Hue),
+                                  max(dfiv$Hue),
+                                  length.out = 101),
+                        KEEP.OUT.ATTRS = FALSE,
+                        stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tibble::as_tibble()
+
+viz_grid_easy_class %>% glimpse()
+```
+
+```{r}
+viz_grid_easy_class %>% 
+  mutate(pred = predict(acc_gbm_tune,viz_grid_easy_class,type = "prob")[,2]) %>%
+  ggplot(mapping = aes(x = G,y= B)) + 
+  geom_raster(mapping = aes(fill=pred)) + 
+  scale_fill_viridis_c() +
+  theme_bw()
+```
+**What conclusions can draw from your surface plots?**
+For the easiest to predict classification model, the predict function returns the prediction probability of the model in that interval.The prediction accuracy of the model is very high for all intervals except for the case where G is less than -2.
+
+
+#### 2.2 HARDEST to predict combination
+midtone+neutral
+```{r}
+viz_grid_hard_class <- expand.grid(
+                        R = median(dfiv$R),
+                        G = seq(min(dfiv$G),
+                                max(dfiv$G),
+                                length.out = 101),
+                        B = median(dfiv$B),
+                        Lightness = "deep",
+                        Saturation = "neutral",
+                        Hue = seq(min(dfiv$Hue),
+                                  max(dfiv$Hue),
+                                  length.out = 101),
+                        KEEP.OUT.ATTRS = FALSE,
+                        stringsAsFactors = FALSE) %>% 
+  as.data.frame() %>% tibble::as_tibble()
+
+viz_grid_hard_class %>% glimpse()
+```
+
+```{r}
+viz_grid_hard_class %>% 
+  mutate(pred = predict(acc_gbm_tune,viz_grid_hard_class,type = "prob")[,2]) %>%
+  ggplot(mapping = aes(x = G,y= B)) + 
+  geom_raster(mapping = aes(fill=pred)) + 
+  scale_fill_viridis_c() +
+  theme_bw()
+```
+**What conclusions can draw from your surface plots?**
+For the hardest to predict classification model,the inaccuracy interval has increased and the accuracy within the interval has decreased. However, the accuracy rate is still very high in most of the intervals.
+
+
+**Are the trends associated with the HARDEST to predict combinations different from the trends associated with the EASIEST to prediction combinations?**
+Their trends are very similar.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
